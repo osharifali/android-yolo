@@ -27,7 +27,6 @@ import android.app.DialogFragment;
 import android.app.Fragment;
 import android.content.Context;
 import android.content.DialogInterface;
-import android.content.res.Configuration;
 import android.graphics.ImageFormat;
 import android.graphics.Matrix;
 import android.graphics.RectF;
@@ -41,7 +40,9 @@ import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
+import android.media.AudioManager;
 import android.media.ImageReader;
+import android.media.MediaPlayer;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -52,18 +53,17 @@ import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.ImageButton;
 import android.widget.Toast;
 
 import org.tensorflow.demo.env.Logger;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.TimeUnit;
 
 public class CameraConnectionFragment extends Fragment {
   private static final Logger LOGGER = new Logger();
@@ -74,12 +74,31 @@ public class CameraConnectionFragment extends Fragment {
    */
   private static final int MINIMUM_PREVIEW_SIZE = 448;
 
+
+    private static final boolean SAVE_PREVIEW_BITMAP = true;
+
+    // These are the settings for the original v1 Inception model. If you want to
+    // use a model that's been produced from the TensorFlow for Poets codelab,
+    // you'll need to set IMAGE_SIZE = 299, IMAGE_MEAN = 128, IMAGE_STD = 128,
+    // INPUT_NAME = "Mul:0", and OUTPUT_NAME = "final_result:0".
+    // You'll also need to update the MODEL_FILE and LABEL_FILE paths to point to
+    // the ones you produced.
+    private static final int NUM_CLASSES = 1470;
+    private static final int INPUT_SIZE = 448;
+    private static final int IMAGE_MEAN = 128;
+    private static final float IMAGE_STD = 128;
+    private static final String INPUT_NAME = "Placeholder";
+    private static final String OUTPUT_NAME = "19_fc";
+
+    private static final String MODEL_FILE = "file:///android_asset/android_graph.pb";
+    private static final String LABEL_FILE =
+            "file:///android_asset/label_strings.txt";
   // TODO: programatically get sizes
   private static final int static_preview_width = 2560;
   private static final int static_preview_height = 1800;
 
   private RecognitionScoreView scoreView;
-
+  private MediaPlayer mMediaPlayer;
   private BoundingBoxView boundingBoxView;
 
   /**
@@ -104,7 +123,54 @@ public class CameraConnectionFragment extends Fragment {
         @Override
         public void onSurfaceTextureAvailable(
             final SurfaceTexture texture, final int width, final int height) {
-          openCamera(width, height);
+            previewSize = new Size(width, height);
+          try {
+            mMediaPlayer= new MediaPlayer();
+            extractImages();
+// mMediaPlayer.setSurface(s);
+            mMediaPlayer.setDataSource("https://archive.org/download/ksnn_compilation_master_the_internet/ksnn_compilation_master_the_internet_512kb.mp4");
+            mMediaPlayer.setOnBufferingUpdateListener(new MediaPlayer.OnBufferingUpdateListener() {
+              @Override
+              public void onBufferingUpdate(MediaPlayer mp, int percent) {
+
+              }
+            });
+            mMediaPlayer.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+              @Override
+              public void onCompletion(MediaPlayer mp) {
+
+              }
+            });
+            mMediaPlayer.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
+              @Override
+              public void onPrepared(MediaPlayer mp) {
+                mp.start();
+//                textureView.setAspectRatio(mp.getVideoWidth(),mp.getVideoHeight());
+
+
+              }
+            });
+            mMediaPlayer.prepareAsync();
+            mMediaPlayer.setOnVideoSizeChangedListener(new MediaPlayer.OnVideoSizeChangedListener() {
+              @Override
+              public void onVideoSizeChanged(MediaPlayer mp, int width, int height) {
+
+              }
+            });
+            mMediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
+
+          } catch (IllegalArgumentException e) {
+            // TODO Auto-generated catch block
+            e.printStackTrace();
+          } catch (SecurityException e) {
+            // TODO Auto-generated catch block
+            e.printStackTrace();
+          } catch (IllegalStateException e) {
+            // TODO Auto-generated catch block
+            e.printStackTrace();
+          } catch (IOException e) {
+            e.printStackTrace();
+          }
         }
 
         @Override
@@ -119,7 +185,12 @@ public class CameraConnectionFragment extends Fragment {
         }
 
         @Override
-        public void onSurfaceTextureUpdated(final SurfaceTexture texture) {}
+        public void onSurfaceTextureUpdated(final SurfaceTexture texture) {
+//            LOGGER.i("Getting assets.");
+//            tfPreviewListener.initialize(
+//                    getActivity().getAssets(), scoreView, boundingBoxView, inferenceHandler, sensorOrientation);
+//            LOGGER.i("TensorFlow initialized.");
+        }
       };
 
   /**
@@ -143,7 +214,7 @@ public class CameraConnectionFragment extends Fragment {
   private CameraDevice cameraDevice;
 
   /**
-   * The rotation in degrees of the camera sensor from the display. 
+   * The rotation in degrees of the camera sensor from the display.
    */
   private Integer sensorOrientation;
 
@@ -329,7 +400,7 @@ public class CameraConnectionFragment extends Fragment {
     // a camera and start preview from here (otherwise, we wait until the surface is ready in
     // the SurfaceTextureListener).
     if (textureView.isAvailable()) {
-      openCamera(textureView.getWidth(), textureView.getHeight());
+
     } else {
       textureView.setSurfaceTextureListener(surfaceTextureListener);
     }
@@ -337,7 +408,6 @@ public class CameraConnectionFragment extends Fragment {
 
   @Override
   public void onPause() {
-    closeCamera();
     stopBackgroundThread();
     super.onPause();
   }
@@ -409,50 +479,6 @@ public class CameraConnectionFragment extends Fragment {
     }
   }
 
-  /**
-   * Opens the camera specified by {@link CameraConnectionFragment#cameraId}.
-   */
-  private void openCamera(final int width, final int height) {
-    setUpCameraOutputs(width, height);
-    configureTransform(width, height);
-    final Activity activity = getActivity();
-    final CameraManager manager = (CameraManager) activity.getSystemService(Context.CAMERA_SERVICE);
-    try {
-      if (!cameraOpenCloseLock.tryAcquire(2500, TimeUnit.MILLISECONDS)) {
-        throw new RuntimeException("Time out waiting to lock camera opening.");
-      }
-      manager.openCamera(cameraId, stateCallback, backgroundHandler);
-    } catch (final CameraAccessException e) {
-      LOGGER.e(e, "Exception!");
-    } catch (final InterruptedException e) {
-      throw new RuntimeException("Interrupted while trying to lock camera opening.", e);
-    }
-  }
-
-  /**
-   * Closes the current {@link CameraDevice}.
-   */
-  private void closeCamera() {
-    try {
-      cameraOpenCloseLock.acquire();
-      if (null != captureSession) {
-        captureSession.close();
-        captureSession = null;
-      }
-      if (null != cameraDevice) {
-        cameraDevice.close();
-        cameraDevice = null;
-      }
-      if (null != previewReader) {
-        previewReader.close();
-        previewReader = null;
-      }
-    } catch (final InterruptedException e) {
-      throw new RuntimeException("Interrupted while trying to lock camera closing.", e);
-    } finally {
-      cameraOpenCloseLock.release();
-    }
-  }
 
   /**
    * Starts a background thread and its {@link Handler}.
@@ -502,6 +528,50 @@ public class CameraConnectionFragment extends Fragment {
             final CaptureRequest request,
             final TotalCaptureResult result) {}
       };
+
+
+
+
+    private void extractImages() {
+
+        final SurfaceTexture texture = textureView.getSurfaceTexture();
+//        assert texture != null;
+//
+//    //            // We configure the size of default buffer to be the size of camera preview we want.
+//    //            texture.setDefaultBufferSize(previewSize.getWidth(), previewSize.getHeight());
+//
+//        // This is the output Surface we need to start preview.
+        final Surface surface = new Surface(texture);
+//
+////         We set up a CaptureRequest.Builder with the output Surface.
+
+        mMediaPlayer.setSurface(surface);
+//
+//        // Create the reader for the preview frames.
+//        previewReader =
+//                ImageReader.newInstance(
+//                        previewSize.getWidth(), previewSize.getHeight(), ImageFormat.YUV_420_888, 2);
+//
+//        previewReader.setOnImageAvailableListener(tfPreviewListener, backgroundHandler);
+//        mMediaPlayer.setSurface(previewReader.getSurface());
+////        previewRequestBuilder.addTarget(previewReader.getSurface());
+//
+//        // Here, we create a CameraCaptureSession for camera preview.
+//
+//
+//        LOGGER.i("Getting assets.");
+        sensorOrientation = 0;
+        tfPreviewListener.initialize(
+                getActivity().getAssets(), scoreView, boundingBoxView, inferenceHandler, sensorOrientation);
+        tfPreviewListener.videoSetup(textureView);
+//        LOGGER.i("TensorFlow initialized.");
+
+
+    }
+
+
+
+
 
   /**
    * Creates a new {@link CameraCaptureSession} for camera preview.

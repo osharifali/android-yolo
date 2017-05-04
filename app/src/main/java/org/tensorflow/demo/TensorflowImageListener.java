@@ -30,6 +30,7 @@ import android.media.ImageReader;
 import android.media.ImageReader.OnImageAvailableListener;
 import android.os.Handler;
 import android.os.Trace;
+import android.view.TextureView;
 
 import junit.framework.Assert;
 
@@ -226,6 +227,55 @@ class TensorFlowImageListener implements OnImageAvailableListener {
     LOGGER.v("Taking picture");
     return;
   }
+
+  public void videoSetup(final TextureView view) {
+
+    handler.post(
+            new Runnable() {
+              @Override
+              public void run() {
+                Bitmap bm = view.getBitmap();
+                if (bm == null) {
+                  return;
+                }
+
+                // No mutex needed as this method is not reentrant.
+                if (computing || !readyForNextImage) {
+                  return;
+                }
+                readyForNextImage = true;
+                computing = true;
+
+                Trace.beginSection("imageAvailable");
+                final Bitmap img = ARGBBitmap(bm);
+                previewHeight = img.getHeight();
+                previewWidth = img.getWidth();
+
+
+                // For examining the actual TF input.
+                if (SAVE_PREVIEW_BITMAP) {
+                  ImageUtils.saveBitmap(img);
+                }
+
+                final List<Classifier.Recognition> results = tensorflow.recognizeImage(img);
+
+                LOGGER.v("%d results", results.size());
+                for (final Classifier.Recognition result : results) {
+                  LOGGER.v("Result: " + result.getTitle());
+                }
+                scoreView.setResults(results);
+                boundingView.setResults(results);
+
+                computing = false;
+                handler.postDelayed(this, 1000);
+              }
+            });
+  }
+
+  private Bitmap ARGBBitmap(Bitmap img) {
+    return img.copy(Bitmap.Config.ARGB_8888,true);
+  }
+
 
   public static int getInputSize() {
     return INPUT_SIZE;
